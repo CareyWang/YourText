@@ -58,6 +58,12 @@ func main() {
 		panic(err)
 	}
 
+	// GC 优化。预分配 1G 内存（不会实际占用）
+	ballast := make([]byte, 1<<30)
+	defer func() {
+		log.Printf("ballast lenL %v", len(ballast))
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
