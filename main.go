@@ -24,6 +24,7 @@ var (
 )
 
 var APP_URL string
+var APP_PORT string
 
 type Req struct {
 	Content string `json:"content" binding:"required"`
@@ -42,6 +43,7 @@ func init() {
 
 	// 从环境变量中获取 APP_URL
 	APP_URL = os.Getenv("YOURTEXT_APP_URL")
+	APP_PORT = os.Getenv("YOURTEXT_APP_PORT")
 
 	// 从环境变量中获取 MinIO 配置
 	MinIOEndpoint = os.Getenv("YOURTEXT_MINIO_ENDPOINT")
@@ -176,7 +178,7 @@ func main() {
 		})
 	})
 
-	r.Run(":8080") // listen and serve on 0.0.0.0:8080
+	r.Run(fmt.Sprintf(":%s", APP_PORT)) // listen and serve on 0.0.0.0:8080
 }
 
 // generate uuid
