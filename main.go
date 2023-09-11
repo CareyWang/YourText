@@ -23,8 +23,10 @@ var (
 	UseSSL        bool // 是否使用 SSL
 )
 
-var APP_URL string
-var APP_PORT string
+var AppURL string
+var AppPort string
+
+const contentMaxLength = 10000
 
 type Req struct {
 	Content string `json:"content" binding:"required"`
@@ -41,9 +43,9 @@ func init() {
 	// 加载失败不影响服务
 	godotenv.Load()
 
-	// 从环境变量中获取 APP_URL
-	APP_URL = os.Getenv("YOURTEXT_APP_URL")
-	APP_PORT = os.Getenv("YOURTEXT_APP_PORT")
+	// 从环境变量中获取 AppURL
+	AppURL = os.Getenv("YOURTEXT_APP_URL")
+	AppPort = os.Getenv("YOURTEXT_APP_PORT")
 
 	// 从环境变量中获取 MinIO 配置
 	MinIOEndpoint = os.Getenv("YOURTEXT_MINIO_ENDPOINT")
@@ -90,6 +92,13 @@ func main() {
 			c.JSON(400, resp)
 			return
 		}
+		if len(data.Content) > contentMaxLength {
+			resp.Code = 2
+			resp.Msg = fmt.Sprintf("content too long, max length is %d", contentMaxLength)
+
+			c.JSON(400, resp)
+			return
+		}
 
 		// 根据年月日生成路径
 		path := time.Now().Format("2006/01/02")
@@ -108,20 +117,20 @@ func main() {
 			minio.PutObjectOptions{ContentType: "text/plain"},
 		)
 		if err != nil {
-			log.Fatalf("failed to upload text: %v", err)
+			log.Printf("failed to upload: %v", err)
 
 			resp.Code = 2
-			resp.Msg = "failed to upload text"
+			resp.Msg = "failed to upload"
 			c.JSON(500, resp)
 			return
 		}
 
 		// 返回文件 URL
-		if APP_URL == "" {
-			APP_URL = "http://localhost:8080"
+		if AppURL == "" {
+			AppURL = "http://localhost:8080"
 		}
 
-		url := fmt.Sprintf("%s/%s", APP_URL, filePath)
+		url := fmt.Sprintf("%s/%s", AppURL, filePath)
 		resp.Data = gin.H{"url": url}
 		c.JSON(200, resp)
 	})
@@ -151,7 +160,7 @@ func main() {
 			minio.GetObjectOptions{},
 		)
 		if err != nil {
-			log.Fatalln("failed to get object: " + filePath)
+			log.Println("failed to get object: " + filePath)
 
 			resp.Code = 2
 			resp.Msg = "failed to get object"
@@ -162,11 +171,11 @@ func main() {
 		// 返回文件
 		fileInfo, err := object.Stat()
 		if err != nil {
-			log.Fatalf("failed to get object stat: %v", err)
+			log.Printf("failed to get object stat: %v", err)
 
 			resp.Code = 3
 			resp.Msg = "failed to get object stat"
-			c.JSON(500, resp)
+			c.JSON(404, resp)
 			return
 		}
 		fileSize := fileInfo.Size
@@ -178,7 +187,10 @@ func main() {
 		})
 	})
 
-	r.Run(fmt.Sprintf(":%s", APP_PORT)) // listen and serve on 0.0.0.0:8080
+	if AppPort == "" {
+		AppPort = "8080"
+	}
+	r.Run(fmt.Sprintf(":%s", AppPort)) // listen and serve on 0.0.0.0:8080
 }
 
 // generate uuid
@@ -203,7 +215,7 @@ func initMinIOBucket(ctx context.Context, c *minio.Client) {
 	// 检查 bucket 是否存在
 	exists, errBucketExists := c.BucketExists(ctx, BucketName)
 	if errBucketExists != nil {
-		log.Fatalln("检查存储桶是否存在失败")
+		log.Panicln("检查存储桶是否存在失败")
 		panic(errBucketExists)
 	}
 
@@ -212,7 +224,7 @@ func initMinIOBucket(ctx context.Context, c *minio.Client) {
 		log.Println("创建存储桶: " + BucketName)
 		err := c.MakeBucket(ctx, BucketName, minio.MakeBucketOptions{})
 		if err != nil {
-			log.Fatalln("创建存储桶失败")
+			log.Panicln("创建存储桶失败")
 			panic(err)
 		}
 	}
