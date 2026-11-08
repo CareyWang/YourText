@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
-	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 	"golang.org/x/net/context"
 )
 
@@ -21,6 +24,7 @@ var (
 	AccessKey     string
 	SecretKey     string
 	BucketName    string
+	S3Region      string
 	UseSSL        bool // 是否使用 SSL
 )
 
@@ -53,6 +57,10 @@ func init() {
 	AccessKey = os.Getenv("YOURTEXT_MINIO_ACCESS_KEY")
 	SecretKey = os.Getenv("YOURTEXT_MINIO_SECRET_KEY")
 	BucketName = os.Getenv("YOURTEXT_MINIO_BUCKET_NAME")
+	S3Region = os.Getenv("YOURTEXT_S3_REGION")
+	if S3Region == "" {
+		S3Region = "us-east-1"
+	}
 	UseSSL = false
 }
 
@@ -94,11 +102,8 @@ func Cors() gin.HandlerFunc {
 }
 
 func main() {
-	// 初始化 MinIO 客户端
-	minioClient, err := initMinIOClient()
-	if err != nil {
-		panic(err)
-	}
+	// 初始化 S3 客户端
+	s3Client := initS3Client()
 
 	// GC 优化。预分配 1G 内存（不会实际占用）
 	ballast := make([]byte, 1<<30)
@@ -110,7 +115,7 @@ func main() {
 	defer cancel()
 
 	// 检查 bucket
-	initMinIOBucket(ctx, minioClient)
+	initS3Bucket(ctx, s3Client)
 
 	r := gin.Default()
 	r.Use(Cors())
@@ -146,15 +151,13 @@ func main() {
 		filePath := fmt.Sprintf("%s/%s.txt", path, randomString())
 		log.Println(filePath)
 
-		// 将文本数据写入 MinIO
-		_, err := minioClient.PutObject(
-			c,
-			BucketName,
-			filePath,
-			strings.NewReader(data.Content),
-			int64(len(data.Content)),
-			minio.PutObjectOptions{ContentType: "text/plain"},
-		)
+		// 将文本数据写入 S3
+		_, err := s3Client.PutObject(c, &s3.PutObjectInput{
+			Bucket:      aws.String(BucketName),
+			Key:         aws.String(filePath),
+			Body:        strings.NewReader(data.Content),
+			ContentType: aws.String("text/plain"),
+		})
 		if err != nil {
 			log.Printf("failed to upload: %v", err)
 
@@ -191,13 +194,11 @@ func main() {
 			return
 		}
 
-		// 从 MinIO 读取文件
-		object, err := minioClient.GetObject(
-			c,
-			BucketName,
-			filePath,
-			minio.GetObjectOptions{},
-		)
+		// 从 S3 读取文件
+		object, err := s3Client.GetObject(c, &s3.GetObjectInput{
+			Bucket: aws.String(BucketName),
+			Key:    aws.String(filePath),
+		})
 		if err != nil {
 			log.Println("failed to get object: " + filePath)
 
@@ -206,23 +207,11 @@ func main() {
 			c.JSON(404, resp)
 			return
 		}
+		defer object.Body.Close()
 
 		// 返回文件
-		fileInfo, err := object.Stat()
-		if err != nil {
-			log.Printf("failed to get object stat: %v", err)
-
-			resp.Code = 3
-			resp.Msg = "failed to get object stat"
-			c.JSON(404, resp)
-			return
-		}
-		fileSize := fileInfo.Size
-		fileName := fileInfo.Key
-		fileType := fileInfo.ContentType
-
-		c.DataFromReader(200, fileSize, fileType, object, map[string]string{
-			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, fileName),
+		c.DataFromReader(200, aws.ToInt64(object.ContentLength), aws.ToString(object.ContentType), object.Body, map[string]string{
+			"Content-Disposition": fmt.Sprintf(`attachment; filename="%s"`, filePath),
 		})
 	})
 
@@ -237,34 +226,39 @@ func randomString() string {
 	return uuid.New().String()
 }
 
-func initMinIOClient() (*minio.Client, error) {
-	// 初始化 MinIO 客户端
-	c, err := minio.New(MinIOEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(AccessKey, SecretKey, ""),
-		Secure: UseSSL,
-	})
+func initS3Client() *s3.Client {
+	scheme := "http"
+	if UseSSL {
+		scheme = "https"
+	}
 
-	return c, err
+	return s3.New(s3.Options{
+		Region:       S3Region,
+		BaseEndpoint: aws.String(fmt.Sprintf("%s://%s", scheme, MinIOEndpoint)),
+		Credentials:  credentials.NewStaticCredentialsProvider(AccessKey, SecretKey, ""),
+		UsePathStyle: true,
+		// 仅在必要时计算/校验校验和，兼容非 AWS 的 S3 服务
+		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
+	})
 }
 
-// initMinIOClient initializes a MinIO client by creating a new client with given
-// credentials and endpoint options. It then checks if a bucket exists, creates
-// the bucket if it doesn't exist, and sets its access policy to public.
-func initMinIOBucket(ctx context.Context, c *minio.Client) {
+// initS3Bucket checks if the bucket exists and creates it if it doesn't.
+func initS3Bucket(ctx context.Context, c *s3.Client) {
 	// 检查 bucket 是否存在
-	exists, errBucketExists := c.BucketExists(ctx, BucketName)
-	if errBucketExists != nil {
-		log.Panicln("检查存储桶是否存在失败")
-		panic(errBucketExists)
+	_, err := c.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(BucketName)})
+	if err == nil {
+		return
+	}
+
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || (apiErr.ErrorCode() != "NotFound" && apiErr.ErrorCode() != "NoSuchBucket") {
+		log.Panicf("检查存储桶是否存在失败: %v", err)
 	}
 
 	// 如果不存在则创建
-	if !exists {
-		log.Println("创建存储桶: " + BucketName)
-		err := c.MakeBucket(ctx, BucketName, minio.MakeBucketOptions{})
-		if err != nil {
-			log.Panicln("创建存储桶失败")
-			panic(err)
-		}
+	log.Println("创建存储桶: " + BucketName)
+	if _, err := c.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(BucketName)}); err != nil {
+		log.Panicf("创建存储桶失败: %v", err)
 	}
 }
