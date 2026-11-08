@@ -8,7 +8,7 @@
 - 文本以 `YYYY/MM/DD/<uuid>.txt` 的路径存储在对象存储中
 - 单条文本最大 10000 字节
 - 默认放开跨域（CORS）
-- 提供多架构 Docker 镜像：`careywong/yourtext`
+- 提供多架构 Docker 镜像：`careywong/yourtext`（linux/386、amd64、arm64、ppc64le、arm/v7）
 
 ## 快速开始（Docker Compose）
 
@@ -44,6 +44,18 @@
 cp .env.example .env              # 替换密钥，YOURTEXT_MINIO_ENDPOINT 保持 localhost:3900
 docker compose up -d yourtext-garage
 go run .
+```
+
+## 构建镜像
+
+`Dockerfile` 在构建机的原生平台上交叉编译（`GOOS` / `GOARCH` / `GOARM`），不依赖 QEMU 模拟，多架构构建速度较快。本地构建：
+
+```bash
+# 当前平台
+docker build -t yourtext .
+
+# 多平台（以 amd64 + arm64 为例，需 buildx；多平台镜像无法直接 --load，可用 --push 或导出为 OCI）
+docker buildx build --platform linux/amd64,linux/arm64 -t <registry>/yourtext:latest --push .
 ```
 
 ## 配置
@@ -141,7 +153,12 @@ curl -X POST http://localhost:8080/upload \
 curl http://localhost:8080/2026/11/08/3f2b8c1e-....txt
 ```
 
-对象不存在时返回 404。
+错误响应：
+
+| HTTP 状态码 | `code` | 说明 |
+|---|---|---|
+| 400 | 1 | 路径为空 |
+| 404 | 2 | 对象不存在，或读取存储失败 |
 
 ## 注意
 
