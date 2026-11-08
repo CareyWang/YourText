@@ -102,6 +102,11 @@ func Cors() gin.HandlerFunc {
 }
 
 func main() {
+	// 子命令：存量数据迁移，见 sync.go
+	if len(os.Args) > 1 && os.Args[1] == "sync-minio" {
+		os.Exit(runSyncMinio(os.Args[2:]))
+	}
+
 	// 初始化 S3 客户端
 	s3Client := initS3Client()
 
