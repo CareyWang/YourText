@@ -3,24 +3,30 @@ services:
   yourtext:
     image: "careywong/yourtext:latest"
     container_name: yourtext
+    restart: unless-stopped
     env_file: .env
     environment:
       - "GIN_MODE=release"
-      - "YOURTEXT_MINIO_ENDPOINT=yourtext-minio:9000"
+      - "YOURTEXT_APP_PORT=8080"
+      - "YOURTEXT_MINIO_ENDPOINT=yourtext-garage:3900"
     ports:
       - "${YOURTEXT_APP_PORT}:8080"
     depends_on:
-      - yourtext-minio
+      - yourtext-garage
 
-  yourtext-minio:
-    image: "minio/minio:latest"
-    container_name: yourtext-minio
+  yourtext-garage:
+    image: "dxflrs/garage:v2.5.0"
+    container_name: yourtext-garage
+    restart: unless-stopped
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
     volumes:
-      - ./data/minio:/data
-    expose:
-      - "9000"
+      - ./garage.toml:/etc/garage.toml:ro
+      - ./data/garage:/var/lib/garage
+    ports:
+      # 仅绑定本机，供本地运行 / 数据迁移脚本访问；应用容器通过内网访问 3900
+      - "127.0.0.1:3900:3900"
     environment:
-      - "MINIO_ROOT_USER=${YOURTEXT_MINIO_ACCESS_KEY}"
-      - "MINIO_ROOT_PASSWORD=${YOURTEXT_MINIO_SECRET_KEY}"
-      - "MINIO_ADDRESS=:9000"
-    command: server /data
+      - "GARAGE_RPC_SECRET=${GARAGE_RPC_SECRET}"
+      - "GARAGE_DEFAULT_ACCESS_KEY=${YOURTEXT_MINIO_ACCESS_KEY}"
+      - "GARAGE_DEFAULT_SECRET_KEY=${YOURTEXT_MINIO_SECRET_KEY}"
+      - "GARAGE_DEFAULT_BUCKET=${YOURTEXT_MINIO_BUCKET_NAME}"
