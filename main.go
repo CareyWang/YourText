@@ -20,12 +20,12 @@ import (
 )
 
 var (
-	MinIOEndpoint string
-	AccessKey     string
-	SecretKey     string
-	BucketName    string
-	S3Region      string
-	UseSSL        bool // 是否使用 SSL
+	S3Endpoint string
+	AccessKey  string
+	SecretKey  string
+	BucketName string
+	S3Region   string
+	UseSSL     bool // 是否使用 SSL
 )
 
 var AppURL string
@@ -52,11 +52,11 @@ func init() {
 	AppURL = os.Getenv("YOURTEXT_APP_URL")
 	AppPort = os.Getenv("YOURTEXT_APP_PORT")
 
-	// 从环境变量中获取 MinIO 配置
-	MinIOEndpoint = os.Getenv("YOURTEXT_MINIO_ENDPOINT")
-	AccessKey = os.Getenv("YOURTEXT_MINIO_ACCESS_KEY")
-	SecretKey = os.Getenv("YOURTEXT_MINIO_SECRET_KEY")
-	BucketName = os.Getenv("YOURTEXT_MINIO_BUCKET_NAME")
+	// 从环境变量中获取 S3 配置
+	S3Endpoint = os.Getenv("YOURTEXT_S3_ENDPOINT")
+	AccessKey = os.Getenv("YOURTEXT_S3_ACCESS_KEY")
+	SecretKey = os.Getenv("YOURTEXT_S3_SECRET_KEY")
+	BucketName = os.Getenv("YOURTEXT_S3_BUCKET_NAME")
 	S3Region = os.Getenv("YOURTEXT_S3_REGION")
 	if S3Region == "" {
 		S3Region = "us-east-1"
@@ -106,6 +106,8 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "sync-minio" {
 		os.Exit(runSyncMinio(os.Args[2:]))
 	}
+
+	checkConfig()
 
 	// 初始化 S3 客户端
 	s3Client := initS3Client()
@@ -231,6 +233,34 @@ func randomString() string {
 	return uuid.New().String()
 }
 
+// checkConfig 在启动时校验必填的环境变量，缺失时给出明确的错误提示。
+func checkConfig() {
+	required := []struct{ name, value string }{
+		{"YOURTEXT_S3_ENDPOINT", S3Endpoint},
+		{"YOURTEXT_S3_ACCESS_KEY", AccessKey},
+		{"YOURTEXT_S3_SECRET_KEY", SecretKey},
+		{"YOURTEXT_S3_BUCKET_NAME", BucketName},
+	}
+	var missing []string
+	for _, r := range required {
+		if r.value == "" {
+			missing = append(missing, r.name)
+		}
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	msg := fmt.Sprintf("缺少必填的环境变量: %s", strings.Join(missing, ", "))
+	for _, name := range []string{"ENDPOINT", "ACCESS_KEY", "SECRET_KEY", "BUCKET_NAME"} {
+		if os.Getenv("YOURTEXT_MINIO_"+name) != "" {
+			msg += "\n检测到旧版变量 YOURTEXT_MINIO_*，已改名为 YOURTEXT_S3_*，请修改 .env 或环境变量（对应关系见 README）"
+			break
+		}
+	}
+	log.Fatal(msg)
+}
+
 func initS3Client() *s3.Client {
 	scheme := "http"
 	if UseSSL {
@@ -239,7 +269,7 @@ func initS3Client() *s3.Client {
 
 	return s3.New(s3.Options{
 		Region:       S3Region,
-		BaseEndpoint: aws.String(fmt.Sprintf("%s://%s", scheme, MinIOEndpoint)),
+		BaseEndpoint: aws.String(fmt.Sprintf("%s://%s", scheme, S3Endpoint)),
 		Credentials:  credentials.NewStaticCredentialsProvider(AccessKey, SecretKey, ""),
 		UsePathStyle: true,
 		// 仅在必要时计算/校验校验和，兼容非 AWS 的 S3 服务
